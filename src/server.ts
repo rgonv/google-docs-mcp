@@ -2467,6 +2467,112 @@ execute: async (args, { log }) => {
 }
 });
 
+server.addTool({
+name: 'downloadDriveFile',
+description: 'Downloads a file from Google Drive by its file ID. Supports downloading images and other binary files. Returns file metadata and content as base64 for binary files, or saves to disk if outputPath is provided.',
+parameters: z.object({
+  fileId: z.string().min(1).describe('The ID of the file to download from Google Drive.'),
+  acknowledgeAbuse: z.boolean().optional().default(false)
+    .describe('Set to true if downloading a file flagged as abusive (malware).'),
+  outputPath: z.string().optional()
+    .describe('Optional local file path to save the downloaded file. If not provided, returns content as base64.'),
+}),
+execute: async (args, { log }) => {
+  const drive = await getDriveClient();
+  log.info(`Downloading file: ${args.fileId}`);
+
+  try {
+    // First, get file metadata
+    const metadata = await drive.files.get({
+      fileId: args.fileId,
+      fields: 'id,name,mimeType,size,webViewLink,webContentLink',
+    });
+
+    const fileName = metadata.data.name || 'untitled';
+    const mimeType = metadata.data.mimeType || 'application/octet-stream';
+    const fileSize = metadata.data.size ? parseInt(metadata.data.size) : 0;
+
+    log.info(`File metadata: ${fileName} (${mimeType}, ${fileSize} bytes)`);
+
+    // Check if file is a Google Workspace document (cannot be downloaded with files.get)
+    const googleDocTypes = [
+      'application/vnd.google-apps.document',
+      'application/vnd.google-apps.spreadsheet',
+      'application/vnd.google-apps.presentation',
+      'application/vnd.google-apps.drawing',
+      'application/vnd.google-apps.form',
+      'application/vnd.google-apps.site'
+    ];
+
+    if (googleDocTypes.includes(mimeType)) {
+      throw new UserError(
+        `File "${fileName}" is a Google Workspace file (${mimeType}). ` +
+        `Use the appropriate read tool instead (e.g., readGoogleDoc for documents, readSpreadsheet for sheets).`
+      );
+    }
+
+    // Add size limit check for base64 encoding (10MB limit)
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+    if (!args.outputPath && fileSize > MAX_FILE_SIZE) {
+      throw new UserError(
+        `File is too large (${fileSize} bytes) for base64 encoding. Maximum supported size is ${MAX_FILE_SIZE} bytes. ` +
+        `Please provide an outputPath to save the file to disk instead.`
+      );
+    }
+
+    // Download file content with alt=media
+    log.info(`Downloading file content...`);
+    const response = await drive.files.get(
+      {
+        fileId: args.fileId,
+        alt: 'media',
+        acknowledgeAbuse: args.acknowledgeAbuse,
+      },
+      { responseType: 'arraybuffer' }
+    );
+
+    const content = Buffer.from(response.data as ArrayBuffer);
+    log.info(`Downloaded ${content.length} bytes`);
+
+    // If output path is specified, write to file
+    if (args.outputPath) {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      
+      // Ensure directory exists
+      const dir = path.dirname(args.outputPath);
+      await fs.mkdir(dir, { recursive: true });
+      
+      await fs.writeFile(args.outputPath, content);
+      return `Successfully downloaded "${fileName}" (${fileSize} bytes) to ${args.outputPath}\n` +
+             `MIME Type: ${mimeType}\n` +
+             `View Link: ${metadata.data.webViewLink || 'N/A'}`;
+    }
+
+    // Otherwise, return as base64 for images and other files
+    const base64Content = content.toString('base64');
+    
+    return JSON.stringify({
+      fileName,
+      mimeType,
+      size: fileSize,
+      webViewLink: metadata.data.webViewLink,
+      webContentLink: metadata.data.webContentLink,
+      content: base64Content,
+      encoding: 'base64',
+      note: 'Use the content field with base64 decoding to access the file data.'
+    }, null, 2);
+
+  } catch (error: any) {
+    log.error(`Error downloading file ${args.fileId}: ${error.message || error}`);
+    if (error instanceof UserError) throw error;
+    if (error.code === 404) throw new UserError("File not found. Check the file ID.");
+    if (error.code === 403) throw new UserError("Permission denied. Ensure you have access to this file and that it's not restricted.");
+    throw new UserError(`Failed to download file: ${error.message || 'Unknown error'}`);
+  }
+}
+});
+
 // --- Server Startup ---
 async function startServer() {
 try {
