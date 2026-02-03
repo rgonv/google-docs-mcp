@@ -2468,6 +2468,146 @@ execute: async (args, { log }) => {
 });
 
 server.addTool({
+name: 'searchDriveFilesByType',
+description: 'Searches for files in Google Drive by file type (Google Docs, Sheets, Forms, Slides, PDFs, images, etc.). Supports all Google Workspace file types and standard file formats.',
+parameters: z.object({
+  fileType: z.enum([
+    'document',      // Google Docs
+    'spreadsheet',   // Google Sheets
+    'presentation',  // Google Slides
+    'form',          // Google Forms
+    'drawing',       // Google Drawings
+    'folder',        // Folders
+    'pdf',           // PDF files
+    'image',         // Image files (jpg, png, gif, etc.)
+    'video',         // Video files
+    'audio',         // Audio files
+    'archive',       // ZIP, RAR, etc.
+    'all'            // All file types
+  ]).describe('Type of files to search for. Use "form" for Google Forms.'),
+  query: z.string().optional().describe('Search query to filter files by name or content.'),
+  maxResults: z.number().int().min(1).max(100).optional().default(20).describe('Maximum number of files to return (1-100).'),
+  orderBy: z.enum(['name', 'modifiedTime', 'createdTime', 'folder']).optional().default('modifiedTime').describe('Sort order for results.'),
+  modifiedAfter: z.string().optional().describe('Only return files modified after this date (ISO 8601 format, e.g., "2024-01-01").'),
+  inFolder: z.string().optional().describe('Limit search to a specific folder ID.'),
+}),
+execute: async (args, { log }) => {
+  const drive = await getDriveClient();
+  log.info(`Searching Drive files by type: ${args.fileType}, Query: ${args.query || 'none'}`);
+
+  try {
+    // Map file types to MIME types
+    const mimeTypeMap: Record<string, string> = {
+      'document': 'application/vnd.google-apps.document',
+      'spreadsheet': 'application/vnd.google-apps.spreadsheet',
+      'presentation': 'application/vnd.google-apps.presentation',
+      'form': 'application/vnd.google-apps.form',
+      'drawing': 'application/vnd.google-apps.drawing',
+      'folder': 'application/vnd.google-apps.folder',
+      'pdf': 'application/pdf',
+    };
+
+    // Build the query string
+    let queryString = "trashed=false";
+
+    // Add MIME type filter
+    if (args.fileType !== 'all') {
+      if (args.fileType === 'image') {
+        queryString += " and (mimeType contains 'image/')";
+      } else if (args.fileType === 'video') {
+        queryString += " and (mimeType contains 'video/')";
+      } else if (args.fileType === 'audio') {
+        queryString += " and (mimeType contains 'audio/')";
+      } else if (args.fileType === 'archive') {
+        queryString += " and (mimeType='application/zip' or mimeType='application/x-rar-compressed' or mimeType='application/x-7z-compressed')";
+      } else if (mimeTypeMap[args.fileType]) {
+        queryString += ` and mimeType='${mimeTypeMap[args.fileType]}'`;
+      }
+    }
+
+    // Add folder filter if specified
+    if (args.inFolder) {
+      queryString += ` and '${args.inFolder}' in parents`;
+    }
+
+    // Add search query
+    if (args.query) {
+      queryString += ` and (name contains '${args.query}' or fullText contains '${args.query}')`;
+    }
+
+    // Add date filter
+    if (args.modifiedAfter) {
+      queryString += ` and modifiedTime > '${args.modifiedAfter}'`;
+    }
+
+    log.info(`Drive query: ${queryString}`);
+
+    const response = await drive.files.list({
+      q: queryString,
+      pageSize: args.maxResults,
+      orderBy: args.orderBy === 'name' ? 'name' : args.orderBy,
+      fields: 'files(id,name,mimeType,modifiedTime,createdTime,size,webViewLink,iconLink,owners(displayName,emailAddress))',
+    });
+
+    const files = response.data.files || [];
+
+    if (files.length === 0) {
+      return `No ${args.fileType === 'all' ? 'files' : args.fileType + 's'} found matching your criteria.`;
+    }
+
+    // Map MIME types to readable names and emojis
+    const getFileTypeInfo = (mimeType: string | null | undefined): { name: string; emoji: string } => {
+      if (!mimeType) return { name: 'Unknown', emoji: '📎' };
+      
+      const typeMap: Record<string, { name: string; emoji: string }> = {
+        'application/vnd.google-apps.document': { name: 'Google Doc', emoji: '📄' },
+        'application/vnd.google-apps.spreadsheet': { name: 'Google Sheet', emoji: '📊' },
+        'application/vnd.google-apps.presentation': { name: 'Google Slides', emoji: '📈' },
+        'application/vnd.google-apps.form': { name: 'Google Form', emoji: '📋' },
+        'application/vnd.google-apps.drawing': { name: 'Google Drawing', emoji: '🎨' },
+        'application/vnd.google-apps.folder': { name: 'Folder', emoji: '📁' },
+        'application/pdf': { name: 'PDF', emoji: '📕' },
+      };
+
+      if (typeMap[mimeType]) return typeMap[mimeType];
+      if (mimeType.startsWith('image/')) return { name: 'Image', emoji: '🖼️' };
+      if (mimeType.startsWith('video/')) return { name: 'Video', emoji: '🎥' };
+      if (mimeType.startsWith('audio/')) return { name: 'Audio', emoji: '🎵' };
+      
+      return { name: 'File', emoji: '📎' };
+    };
+
+    let result = `Found ${files.length} ${args.fileType === 'all' ? 'file(s)' : args.fileType + '(s)'}:\n\n`;
+    
+    files.forEach((file, index) => {
+      const typeInfo = getFileTypeInfo(file.mimeType);
+      const modifiedDate = file.modifiedTime ? new Date(file.modifiedTime).toLocaleDateString() : 'Unknown';
+      const owner = file.owners?.[0]?.displayName || 'Unknown';
+      
+      result += `${index + 1}. ${typeInfo.emoji} **${file.name}**\n`;
+      result += `   Type: ${typeInfo.name}\n`;
+      result += `   ID: ${file.id}\n`;
+      result += `   Modified: ${modifiedDate}\n`;
+      result += `   Owner: ${owner}\n`;
+      
+      if (file.size) {
+        const sizeInKB = Math.round(parseInt(file.size) / 1024);
+        result += `   Size: ${sizeInKB} KB\n`;
+      }
+      
+      result += `   Link: ${file.webViewLink}\n\n`;
+    });
+
+    return result;
+  } catch (error: any) {
+    log.error(`Error searching Drive files: ${error.message || error}`);
+    if (error.code === 403) throw new UserError("Permission denied. Make sure you have granted Google Drive access to the application.");
+    throw new UserError(`Failed to search files: ${error.message || 'Unknown error'}`);
+  }
+}
+});
+
+server.addTool({
 name: 'downloadDriveFile',
 description: 'Downloads a file from Google Drive by its file ID. Supports downloading images and other binary files. Returns file metadata and content as base64 for binary files, or saves to disk if outputPath is provided.',
 parameters: z.object({
