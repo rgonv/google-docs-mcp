@@ -26,10 +26,11 @@ let authClient: OAuth2Client | null = null;
 let googleDocs: docs_v1.Docs | null = null;
 let googleDrive: drive_v3.Drive | null = null;
 let googleSheets: sheets_v4.Sheets | null = null;
+let lookerStudio: any | null = null; // Looker Studio API client
 
 // --- Initialization ---
 async function initializeGoogleClient() {
-if (googleDocs && googleDrive && googleSheets) return { authClient, googleDocs, googleDrive, googleSheets };
+if (googleDocs && googleDrive && googleSheets && lookerStudio) return { authClient, googleDocs, googleDrive, googleSheets, lookerStudio };
 if (!authClient) { // Check authClient instead of googleDocs to allow re-attempt
 try {
 console.error("Attempting to authorize Google API client...");
@@ -38,6 +39,7 @@ authClient = client; // Assign client here
 googleDocs = google.docs({ version: 'v1', auth: authClient });
 googleDrive = google.drive({ version: 'v3', auth: authClient });
 googleSheets = google.sheets({ version: 'v4', auth: authClient });
+lookerStudio = true; // Looker Studio is accessed via Drive API with specific MIME types
 console.error("Google API client authorized successfully.");
 } catch (error) {
 console.error("FATAL: Failed to initialize Google API client:", error);
@@ -45,6 +47,7 @@ authClient = null; // Reset on failure
 googleDocs = null;
 googleDrive = null;
 googleSheets = null;
+lookerStudio = null;
 // Decide if server should exit or just fail tools
 throw new Error("Google client initialization failed. Cannot start server tools.");
 }
@@ -59,12 +62,15 @@ googleDrive = google.drive({ version: 'v3', auth: authClient });
 if (authClient && !googleSheets) {
 googleSheets = google.sheets({ version: 'v4', auth: authClient });
 }
-
-if (!googleDocs || !googleDrive || !googleSheets) {
-throw new Error("Google Docs, Drive, and Sheets clients could not be initialized.");
+if (authClient && !lookerStudio) {
+lookerStudio = true; // Looker Studio is accessed via Drive API
 }
 
-return { authClient, googleDocs, googleDrive, googleSheets };
+if (!googleDocs || !googleDrive || !googleSheets || !lookerStudio) {
+throw new Error("Google Docs, Drive, Sheets, and Looker Studio clients could not be initialized.");
+}
+
+return { authClient, googleDocs, googleDrive, googleSheets, lookerStudio };
 }
 
 // Set up process-level unhandled error/rejection handlers to prevent crashes
@@ -109,6 +115,14 @@ if (!sheets) {
 throw new UserError("Google Sheets client is not initialized. Authentication might have failed during startup or lost connection.");
 }
 return sheets;
+}
+
+// --- Helper to get Looker Studio client within tools ---
+// Note: Looker Studio reports/data sources are accessed via Drive API
+async function getLookerStudioClient() {
+await initializeGoogleClient(); // Ensure client is initialized
+// Return true since Looker Studio uses Drive API for access
+return true;
 }
 
 // === HELPER FUNCTIONS ===
@@ -2709,6 +2723,172 @@ execute: async (args, { log }) => {
     if (error.code === 404) throw new UserError("File not found. Check the file ID.");
     if (error.code === 403) throw new UserError("Permission denied. Ensure you have access to this file and that it's not restricted.");
     throw new UserError(`Failed to download file: ${error.message || 'Unknown error'}`);
+  }
+}
+});
+
+// === LOOKER STUDIO TOOLS ===
+
+server.addTool({
+name: 'listLookerStudioReports',
+description: 'Lists Looker Studio (formerly Data Studio) reports accessible to the user. Returns report metadata including ID, name, and access URL.',
+parameters: z.object({
+  maxResults: z.number().int().min(1).max(100).optional().default(20).describe('Maximum number of reports to return (1-100).'),
+  orderBy: z.enum(['name', 'modifiedTime', 'createdTime']).optional().default('modifiedTime').describe('Sort order for results.'),
+}),
+execute: async (args, { log }) => {
+  await getLookerStudioClient();
+  const { authClient } = await initializeGoogleClient();
+  log.info(`Listing Looker Studio reports. Max: ${args.maxResults}, Order: ${args.orderBy}`);
+
+  try {
+    // Get access token from auth client
+    const accessToken = await authClient!.getAccessToken();
+    if (!accessToken.token) {
+      throw new UserError("Failed to get access token for Looker Studio API.");
+    }
+
+    // Use Looker Studio API directly
+    const url = `https://datastudio.googleapis.com/v1/assets:search?assetTypes=REPORT&pageSize=${args.maxResults}`;
+    
+    log.info(`Fetching from: ${url}`);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken.token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    log.info(`Response status: ${response.status}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      log.error(`Looker Studio API error: ${response.status} - ${errorText}`);
+      throw new UserError(`Looker Studio API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    log.info(`Full API response: ${JSON.stringify(data, null, 2)}`);
+    
+    const reports = data.assets || [];
+    
+    log.info(`Found ${reports.length} reports`);
+
+    if (reports.length === 0) {
+      return `No Looker Studio reports found.\n\nAPI Response structure: ${JSON.stringify(Object.keys(data))}\n\nYou may need to:\n- Create reports or get access to existing ones\n- Ensure the 'datastudio.readonly' scope is enabled\n- Verify your Google account has Looker Studio reports`;
+    }
+
+    let result = `Found ${reports.length} Looker Studio report(s):\n\n`;
+    
+    reports.forEach((report: any, index: number) => {
+      const modifiedDate = report.updateTime ? new Date(report.updateTime).toLocaleDateString() : 'Unknown';
+      const createdDate = report.createTime ? new Date(report.createTime).toLocaleDateString() : 'Unknown';
+      
+      result += `${index + 1}. 📊 **${report.name}**\n`;
+      result += `   Report ID: ${report.assetId}\n`;
+      result += `   Created: ${createdDate}\n`;
+      result += `   Last Modified: ${modifiedDate}\n`;
+      result += `   Link: https://lookerstudio.google.com/reporting/${report.assetId}\n\n`;
+    });
+
+    result += `\n💡 **Tip:** Use the Report ID to view or share reports.`;
+
+    return result;
+  } catch (error: any) {
+    log.error(`Error listing Looker Studio reports: ${error.message || error}`);
+    if (error.code === 403) {
+      throw new UserError(
+        "Permission denied. Make sure you have:\n" +
+        "1. Enabled the Looker Studio API in Google Cloud Console\n" +
+        "2. Granted datastudio.readonly scope during authentication\n" +
+        "3. Re-authenticated to include the new scope"
+      );
+    }
+    throw new UserError(`Failed to list Looker Studio reports: ${error.message || 'Unknown error'}`);
+  }
+}
+});
+
+server.addTool({
+name: 'listLookerStudioDataSources',
+description: 'Lists Looker Studio data sources accessible to the user. Returns data source metadata including ID, name, connector type, and access URL.',
+parameters: z.object({
+  maxResults: z.number().int().min(1).max(100).optional().default(20).describe('Maximum number of data sources to return (1-100).'),
+  orderBy: z.enum(['name', 'modifiedTime', 'createdTime']).optional().default('modifiedTime').describe('Sort order for results.'),
+}),
+execute: async (args, { log }) => {
+  await getLookerStudioClient();
+  const { authClient } = await initializeGoogleClient();
+  log.info(`Listing Looker Studio data sources. Max: ${args.maxResults}, Order: ${args.orderBy}`);
+
+  try {
+    // Get access token from auth client
+    const accessToken = await authClient!.getAccessToken();
+    if (!accessToken.token) {
+      throw new UserError("Failed to get access token for Looker Studio API.");
+    }
+
+    // Use Looker Studio API directly
+    const url = `https://datastudio.googleapis.com/v1/assets:search?assetTypes=DATA_SOURCE&pageSize=${args.maxResults}`;
+    
+    log.info(`Fetching from: ${url}`);
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken.token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    log.info(`Response status: ${response.status}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      log.error(`Looker Studio API error: ${response.status} - ${errorText}`);
+      throw new UserError(`Looker Studio API error (${response.status}): ${errorText}`);
+    }
+
+    const data = await response.json();
+    log.info(`Full API response: ${JSON.stringify(data, null, 2)}`);
+    
+    const dataSources = data.assets || [];
+    
+    log.info(`Found ${dataSources.length} data sources`);
+
+    if (dataSources.length === 0) {
+      return `No Looker Studio data sources found.\n\nAPI Response structure: ${JSON.stringify(Object.keys(data))}\n\nYou may need to:\n- Create data sources or get access to existing ones\n- Ensure the 'datastudio.readonly' scope is enabled\n- Verify your Google account has Looker Studio data sources`;
+    }
+
+    let result = `Found ${dataSources.length} Looker Studio data source(s):\n\n`;
+    
+    dataSources.forEach((dataSource: any, index: number) => {
+      const modifiedDate = dataSource.updateTime ? new Date(dataSource.updateTime).toLocaleDateString() : 'Unknown';
+      const createdDate = dataSource.createTime ? new Date(dataSource.createTime).toLocaleDateString() : 'Unknown';
+      
+      result += `${index + 1}. 🔗 **${dataSource.name}**\n`;
+      result += `   Data Source ID: ${dataSource.assetId}\n`;
+      result += `   Created: ${createdDate}\n`;
+      result += `   Last Modified: ${modifiedDate}\n`;
+      result += `   Link: https://lookerstudio.google.com/datasources/${dataSource.assetId}\n\n`;
+    });
+
+    result += `\n💡 **Tip:** Data sources can be connected to various sources like BigQuery, Google Sheets, MySQL, etc.`;
+
+    return result;
+  } catch (error: any) {
+    log.error(`Error listing Looker Studio data sources: ${error.message || error}`);
+    if (error.code === 403) {
+      throw new UserError(
+        "Permission denied. Make sure you have:\n" +
+        "1. Enabled the Looker Studio API in Google Cloud Console\n" +
+        "2. Granted datastudio.readonly scope during authentication\n" +
+        "3. Re-authenticated to include the new scope"
+      );
+    }
+    throw new UserError(`Failed to list Looker Studio data sources: ${error.message || 'Unknown error'}`);
   }
 }
 });

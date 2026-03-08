@@ -19,7 +19,8 @@ const CREDENTIALS_PATH = path.join(projectRootDir, 'credentials.json');
 const SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/drive', // Full Drive access for listing, searching, and document discovery
-  'https://www.googleapis.com/auth/spreadsheets' // Google Sheets API access
+  'https://www.googleapis.com/auth/spreadsheets', // Google Sheets API access
+  'https://www.googleapis.com/auth/datastudio.readonly' // Looker Studio (Data Studio) read-only access
 ];
 
 // --- NEW FUNCTION: Handles Service Account Authentication ---
