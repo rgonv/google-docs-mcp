@@ -2208,7 +2208,7 @@ description: 'Writes data to a specific range in a Google Spreadsheet. Overwrite
 parameters: z.object({
   spreadsheetId: z.string().describe('The ID of the Google Spreadsheet (from the URL).'),
   range: z.string().describe('A1 notation range to write to (e.g., "A1:B2" or "Sheet1!A1:B2").'),
-  values: z.array(z.array(z.any())).describe('2D array of values to write. Each inner array represents a row.'),
+  values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of values to write. Each inner array represents a row.'),
   valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional().default('USER_ENTERED')
     .describe('How input data should be interpreted. RAW: values are stored as-is. USER_ENTERED: values are parsed as if typed by a user.'),
 }),
@@ -2244,7 +2244,7 @@ description: 'Appends rows of data to the end of a sheet in a Google Spreadsheet
 parameters: z.object({
   spreadsheetId: z.string().describe('The ID of the Google Spreadsheet (from the URL).'),
   range: z.string().describe('A1 notation range indicating where to append (e.g., "A1" or "Sheet1!A1"). Data will be appended starting from this range.'),
-  values: z.array(z.array(z.any())).describe('2D array of values to append. Each inner array represents a row.'),
+  values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of values to append. Each inner array represents a row.'),
   valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional().default('USER_ENTERED')
     .describe('How input data should be interpreted. RAW: values are stored as-is. USER_ENTERED: values are parsed as if typed by a user.'),
 }),
@@ -2372,7 +2372,7 @@ description: 'Creates a new Google Spreadsheet.',
 parameters: z.object({
   title: z.string().min(1).describe('Title for the new spreadsheet.'),
   parentFolderId: z.string().optional().describe('ID of folder where spreadsheet should be created. If not provided, creates in Drive root.'),
-  initialData: z.array(z.array(z.any())).optional().describe('Optional initial data to populate in the first sheet. Each inner array represents a row.'),
+  initialData: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).optional().describe('Optional initial data to populate in the first sheet. Each inner array represents a row.'),
 }),
 execute: async (args, { log }) => {
   const drive = await getDriveClient();
