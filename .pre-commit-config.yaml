@@ -1,0 +1,27 @@
+# Pre-commit hooks: secret scanning + SAST
+# Policy: Contribución de Código v1.2 + EGS §7.2 (Mandatory)
+# Install: pre-commit install
+# Manual run: pre-commit run --all-files
+
+repos:
+  # ── Secret scanning ─────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.26.0
+    hooks:
+      - id: gitleaks
+
+  # ── SAST: static analysis (EGS §7.2 Mandatory) ─────────────
+  # Critical/High block the commit; Medium/Low warn only
+  # Source: https://semgrep.dev/docs/extensions/pre-commit
+  - repo: https://github.com/semgrep/pre-commit
+    rev: v1.172.0
+    hooks:
+      - id: semgrep
+        entry: semgrep
+        args:
+          - "--config"
+          - "p/default"
+          - "--error"
+          - "--severity"
+          - "ERROR"
+          - "--skip-unknown-extensions"

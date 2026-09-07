@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Semgrep
+        run: pipx install semgrep
+
+      - name: Run Semgrep SAST
+        run: semgrep scan --config p/default --error --severity ERROR --skip-unknown-extensions
